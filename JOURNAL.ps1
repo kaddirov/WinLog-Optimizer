@@ -379,8 +379,7 @@ function Restore-Backup {
         Write-Log "Rollback terminé : $restored restaurés, $failed échecs" $(if ($failed -eq 0) { $green } else { $orange })
         Write-Audit "Rollback effectué : $restored restaurés, $failed échecs"
         return ($failed -eq 0)
-    }
-    catch {
+    } catch {
         Write-Log "ERREUR lors du rollback : $($_.Exception.Message)" $redc
         Write-Audit "ERREUR rollback : $($_.Exception.Message)"
         return $false
