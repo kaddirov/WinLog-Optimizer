@@ -25,6 +25,8 @@ $i18n = @{
         BtnApply        = "Appliquer la configuration"
         BtnDefault      = "Valeurs par defaut"
         BtnLang         = "Lang: FR"
+        LblGlobalSize   = "Taille globale (Mo) :"
+        BtnApplyAllSize = "Appliquer a tous"
         ToolMode        = "Mode Circular : ecrase les anciens logs`nMode AutoBackup : archive le log plein`nMode OverwriteAsNeeded : ecrase sans archive"
         
         MsgAdminErr     = "Ce script doit etre execute en tant qu'Administrateur."
@@ -78,6 +80,8 @@ $i18n = @{
         BtnApply        = "Apply Configuration"
         BtnDefault      = "Default Values"
         BtnLang         = "Lang: EN"
+        LblGlobalSize   = "Global Size (MB):"
+        BtnApplyAllSize = "Apply to All"
         ToolMode        = "Circular Mode: overwrites old logs`nAutoBackup Mode: archives full logs`nOverwriteAsNeeded: overwrites without archive"
         
         MsgAdminErr     = "This script must be run as Administrator."
@@ -330,7 +334,7 @@ $miOpenDir.Add_Click({
 
 $flowSel = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowSel.Location = New-Object System.Drawing.Point(20, 355)
-$flowSel.Size = New-Object System.Drawing.Size(765, 30)
+$flowSel.Size = New-Object System.Drawing.Size(210, 30)
 
 $btnAll = New-Object System.Windows.Forms.Button
 $btnAll.Text = T "BtnAll"
@@ -345,6 +349,38 @@ $btnNone.BackColor = $surface2
 $btnNone.FlatStyle = 'Flat'
 
 $flowSel.Controls.AddRange(@($btnAll, $btnNone))
+
+# Actions Groupees
+$flowBulk = New-Object System.Windows.Forms.FlowLayoutPanel
+$flowBulk.Location = New-Object System.Drawing.Point(235, 355)
+$flowBulk.Size = New-Object System.Drawing.Size(550, 30)
+$flowBulk.FlowDirection = 'LeftToRight'
+
+$lblBulk = New-Object System.Windows.Forms.Label
+$lblBulk.Text = T "LblGlobalSize"
+$lblBulk.AutoSize = $true
+$lblBulk.Margin = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
+
+$txtBulkSize = New-Object System.Windows.Forms.TextBox
+$txtBulkSize.Size = New-Object System.Drawing.Size(60, 24)
+$txtBulkSize.Text = "20"
+$txtBulkSize.BackColor = $surface2
+$txtBulkSize.ForeColor = $text
+$txtBulkSize.BorderStyle = 'FixedSingle'
+
+$btnBulkSize = New-Object System.Windows.Forms.Button
+$btnBulkSize.Text = T "BtnApplyAllSize"
+$btnBulkSize.AutoSize = $true
+$btnBulkSize.BackColor = $surface2
+$btnBulkSize.FlatStyle = 'Flat'
+
+$flowBulk.Controls.AddRange(@($lblBulk, $txtBulkSize, $btnBulkSize))
+
+$btnBulkSize.Add_Click({
+    if ($txtBulkSize.Text -match '^\d+$') {
+        foreach ($r in $dgv.Rows) { $r.Cells['TailleMo'].Value = $txtBulkSize.Text }
+    }
+})
 
 # --- 11. ProgressBar ---
 $progressBar = New-Object System.Windows.Forms.ProgressBar
@@ -406,6 +442,8 @@ function Update-UI-Language {
     $dgv.Columns['Mode'].HeaderText = T "ColMode"
     
     $lblCount.Text = T "LblCount" $targetLogs.Count
+    $lblBulk.Text = T "LblGlobalSize"
+    $btnBulkSize.Text = T "BtnApplyAllSize"
 }
 
 $btnLang.Add_Click({
@@ -457,14 +495,15 @@ function Restore-Backup {
                 'OverwriteAsNeeded' { $rt = 'false'; $ab = 'false' }
             }
             
-            $bytes = [int]$entry.Taille * 1MB
+            $bytes = [long]$entry.Taille * 1048576
             $currentPath = $entry.CurrentPath
             if ([string]::IsNullOrEmpty($currentPath)) { $currentPath = $env:SystemDrive + '\EVT\' + $logName + '.evtx' }
             
-            $cmdArgs = @('sl', $logName, "/lf:`"$currentPath`"", "/ms:$bytes", "/rt:$rt")
-            if ($ab) { $cmdArgs += '/ab:true' }
+            $argStr = "sl `"$logName`" /lfn:`"$currentPath`" /ms:$bytes /rt:$rt"
+            if ($ab -eq 'true') { $argStr += " /ab:true" }
             
-            $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru
+            $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru
+
             if ($proc.ExitCode -eq 0) {
                 $restored++
                 Write-Log (T "LogRbOk" $logName) $green
@@ -530,11 +569,15 @@ $btnApply.Add_Click({
             'AutoBackup' { $rt = 'true'; $ab = 'true' }
             'OverwriteAsNeeded' { $rt = 'false'; $ab = 'false' }
         }
-        $cmdArgs = @('sl', $logName, "/lf:`"$(Join-Path $path ($logName + '.evtx'))`"", "/ms:$([int]$s.Size * 1MB)", "/rt:$rt")
-        if ($ab) { $cmdArgs += '/ab:true' }
+        $bytes = [long]$s.Size * 1048576
+        $fullPath = Join-Path $path ($logName + '.evtx')
+        
+        $argStr = "sl `"$logName`" /lfn:`"$fullPath`" /ms:$bytes /rt:$rt"
+        if ($ab -eq 'true') { $argStr += " /ab:true" }
 
         $errPath = Join-Path $env:TEMP ("wevt_err_$logName.txt")
-        $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru -RedirectStandardError $errPath
+        $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru -RedirectStandardError $errPath
+
         $errMsg = if (Test-Path $errPath) { (Get-Content $errPath -Raw).Trim(); Remove-Item $errPath -Force } else { "" }
 
         $res = [PSCustomObject]@{ Name = $logName; Size = $s.Size; Mode = $s.Mode; ExitCode = $proc.ExitCode; Error = $errMsg }
@@ -587,7 +630,7 @@ $btnRes.Add_Click({ foreach ($r in $dgv.Rows) {
 } })
 
 # --- 18. Lancement ---
-$form.Controls.AddRange(@($panelH, $lblP, $txtPath, $btnBr, $lblGH, $lblCount, $dgv, $flowSel, $progressBar, $flowAct, $txtOutput))
+$form.Controls.AddRange(@($panelH, $lblP, $txtPath, $btnBr, $lblGH, $lblCount, $dgv, $flowSel, $flowBulk, $progressBar, $flowAct, $txtOutput))
 $panelH.Controls.Add($btnLang)
 
 # --- Chargement des donnees ---
