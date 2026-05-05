@@ -273,6 +273,9 @@ $dgv.EnableHeadersVisualStyles = $false
 $dgv.AutoSizeColumnsMode = 'Fill'
 $dgv.SelectionMode = 'FullRowSelect'
 
+# Supprimer les popups d'erreur DGV
+$dgv.Add_DataError({ param($s, $e) $e.ThrowException = $false })
+
 # Styles de lignes pour une lisibilitÃ© maximale
 $dgv.RowsDefaultCellStyle.BackColor = $surface
 $dgv.RowsDefaultCellStyle.ForeColor = $text
@@ -399,7 +402,9 @@ $btnScan.Add_Click({
     foreach ($l in $allLogs) {
         if ($existing -notcontains $l.LogName) {
             $sizeMB = [math]::Ceiling($l.MaximumSizeInBytes / 1MB)
-            [void]$dgv.Rows.Add($true, $l.LogName, $l.LogFilePath, $sizeMB, $l.LogMode.ToString())
+            $rawMode = $l.LogMode.ToString()
+            $cleanMode = if ($rawMode -match 'AutoBackup') { 'AutoBackup' } else { 'Circular' }
+            [void]$dgv.Rows.Add($true, $l.LogName, $l.LogFilePath, $sizeMB, $cleanMode)
         }
     }
     $lblCount.Text = T "LblCount" $dgv.Rows.Count
@@ -730,7 +735,9 @@ foreach ($logName in $targetLogs) {
     try {
         $logObj = Get-WinEvent -ListLog $logName -ErrorAction Stop
         $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
-        [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $logObj.LogMode.ToString())
+        $rawMode = $logObj.LogMode.ToString()
+        $cleanMode = if ($rawMode -match 'AutoBackup') { 'AutoBackup' } else { 'Circular' }
+        [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $cleanMode)
     } catch {
         [void]$dgv.Rows.Add($true, $logName, 'N/A', 20, 'Circular')
     }
