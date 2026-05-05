@@ -24,7 +24,7 @@ $i18n = @{
         BtnNone         = "Tout decocher"
         BtnApply        = "Appliquer la configuration"
         BtnDefault      = "Valeurs par defaut"
-        BtnLang         = "Lang: FR 🇫🇷"
+        BtnLang         = "Lang: FR"
         ToolMode        = "Mode Circular : ecrase les anciens logs`nMode AutoBackup : archive le log plein`nMode OverwriteAsNeeded : ecrase sans archive"
         
         MsgAdminErr     = "Ce script doit etre execute en tant qu'Administrateur."
@@ -74,7 +74,7 @@ $i18n = @{
         BtnNone         = "Uncheck All"
         BtnApply        = "Apply Configuration"
         BtnDefault      = "Default Values"
-        BtnLang         = "Lang: EN 🇺🇸"
+        BtnLang         = "Lang: EN"
         ToolMode        = "Circular Mode: overwrites old logs`nAutoBackup Mode: archives full logs`nOverwriteAsNeeded: overwrites without archive"
         
         MsgAdminErr     = "This script must be run as Administrator."
@@ -113,7 +113,7 @@ $i18n = @{
 # Fonction de traduction
 function T {
     param($key, $arg1 = $null, $arg2 = $null, $arg3 = $null)
-    $text = $i18n[$currentLang][$key]
+    $text = $i18n[$script:currentLang][$key]
     if ($null -eq $text) { return $key }
     if ($null -ne $arg3) { return $text -f $arg1, $arg2, $arg3 }
     if ($null -ne $arg2) { return $text -f $arg1, $arg2 }
@@ -248,8 +248,18 @@ $dgv.BackgroundColor = $surface
 $dgv.ForeColor = $text
 $dgv.GridColor = $border
 $dgv.BorderStyle = 'None'
-$dgv.AutoSizeColumnsMode = 'Fill'
+$dgv.CellBorderStyle = 'SingleHorizontal'
 $dgv.EnableHeadersVisualStyles = $false
+$dgv.AutoSizeColumnsMode = 'Fill'
+$dgv.SelectionMode = 'FullRowSelect'
+
+# Styles de lignes pour une lisibilité maximale
+$dgv.RowsDefaultCellStyle.BackColor = $surface
+$dgv.RowsDefaultCellStyle.ForeColor = $text
+$dgv.RowsDefaultCellStyle.SelectionBackColor = $accent
+$dgv.RowsDefaultCellStyle.SelectionForeColor = [System.Drawing.Color]::Black
+$dgv.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#252538')
+$dgv.RowTemplate.Height = 28
 
 # Colonnes
 $colActive = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
@@ -283,6 +293,20 @@ $colMode.FillWeight = 22
 [void]$dgv.Columns.AddRange($colActive, $colName, $colPath, $colSize, $colMode)
 $dgv.ColumnHeadersDefaultCellStyle.BackColor = $headerBg
 $dgv.ColumnHeadersDefaultCellStyle.ForeColor = $accent
+
+# --- Chargement des donnees ---
+$targetLogs = @('Application', 'System', 'Security', 'Setup', 'ForwardedEvents')
+Write-Log (T "LogInit") $accent
+foreach ($logName in $targetLogs) {
+    try {
+        $logObj = Get-WinEvent -ListLog $logName -ErrorAction Stop
+        $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
+        [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $logObj.LogMode.ToString())
+    } catch {
+        [void]$dgv.Rows.Add($true, $logName, 'N/A', 20, 'Circular')
+    }
+}
+
 
 # --- 10. Boutons selection ---
 $flowSel = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -364,8 +388,8 @@ function Update-UI-Language {
 }
 
 $btnLang.Add_Click({
-    $currentLang = if ($currentLang -eq "FR") { "EN" } else { "FR" }
-    $currentLang | Out-File $langFile -Encoding UTF8
+    $script:currentLang = if ($script:currentLang -eq "FR") { "EN" } else { "FR" }
+    $script:currentLang | Out-File $langFile -Encoding UTF8
     Update-UI-Language
 })
 
