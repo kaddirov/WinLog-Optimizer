@@ -294,21 +294,8 @@ $colMode.FillWeight = 22
 $dgv.ColumnHeadersDefaultCellStyle.BackColor = $headerBg
 $dgv.ColumnHeadersDefaultCellStyle.ForeColor = $accent
 
-# --- Chargement des donnees ---
-$targetLogs = @('Application', 'System', 'Security', 'Setup', 'ForwardedEvents')
-Write-Log (T "LogInit") $accent
-foreach ($logName in $targetLogs) {
-    try {
-        $logObj = Get-WinEvent -ListLog $logName -ErrorAction Stop
-        $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
-        [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $logObj.LogMode.ToString())
-    } catch {
-        [void]$dgv.Rows.Add($true, $logName, 'N/A', 20, 'Circular')
-    }
-}
-
-
 # --- 10. Boutons selection ---
+
 $flowSel = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowSel.Location = New-Object System.Drawing.Point(20, 355)
 $flowSel.Size = New-Object System.Drawing.Size(765, 30)
@@ -597,6 +584,20 @@ $btnRes.Add_Click({ foreach ($r in $dgv.Rows) {
 # --- 18. Lancement ---
 $form.Controls.AddRange(@($panelH, $lblP, $txtPath, $btnBr, $lblGH, $lblCount, $dgv, $flowSel, $progressBar, $flowAct, $txtOutput))
 $panelH.Controls.Add($btnLang)
+
+# --- Chargement des donnees ---
+$targetLogs = @('Application', 'System', 'Security', 'Setup', 'ForwardedEvents')
+Write-Log (T "LogInit") $accent
+foreach ($logName in $targetLogs) {
+    try {
+        $logObj = Get-WinEvent -ListLog $logName -ErrorAction Stop
+        $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
+        [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $logObj.LogMode.ToString())
+    } catch {
+        [void]$dgv.Rows.Add($true, $logName, 'N/A', 20, 'Circular')
+    }
+}
+
 Update-UI-Language
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $form.ShowDialog() | Out-Null
