@@ -57,6 +57,9 @@ $i18n = @{
         LogRbEnd        = "Rollback termine : {0} restaures, {1} echecs"
         LogFinished     = "Configuration terminee : {0} OK, {1} echecs"
         LogErrCrit      = "ERREUR CRITIQUE : {0}"
+        
+        CtxOpenPath     = "Ouvrir l'emplacement du fichier"
+        CtxOpenDir      = "Ouvrir le dossier parent"
     }
     EN = @{
         AppTitle        = "WinLog-Optimizer - Admin"
@@ -104,9 +107,12 @@ $i18n = @{
         LogRbStart      = "Restoring previous configuration..."
         LogRbOk         = "  [OK] {0} restored"
         LogRbFail       = "  [FAIL] {0} failed (code {1})"
-        LogRbEnd        = "Rollback finished: {0} restored, {1} echecs"
+        LogRbEnd        = "Rollback finished: {0} restored, {1} failed"
         LogFinished     = "Configuration finished: {0} OK, {1} failed"
         LogErrCrit      = "CRITICAL ERROR: {0}"
+        
+        CtxOpenPath     = "Open file location"
+        CtxOpenDir      = "Open parent folder"
     }
 }
 
@@ -294,6 +300,32 @@ $colMode.FillWeight = 22
 $dgv.ColumnHeadersDefaultCellStyle.BackColor = $headerBg
 $dgv.ColumnHeadersDefaultCellStyle.ForeColor = $accent
 
+# Menu Contextuel
+$ctxMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$miOpenPath = $ctxMenu.Items.Add((T "CtxOpenPath"))
+$miOpenDir = $ctxMenu.Items.Add((T "CtxOpenDir"))
+$dgv.ContextMenuStrip = $ctxMenu
+
+$miOpenPath.Add_Click({
+    $row = $dgv.CurrentRow
+    if ($null -ne $row) {
+        $p = $row.Cells['CurrentPath'].Value
+        if ($p -and $p -ne 'N/A' -and (Test-Path $p)) { Start-Process explorer.exe -ArgumentList "/select,`"$p`"" }
+    }
+})
+
+$miOpenDir.Add_Click({
+    $row = $dgv.CurrentRow
+    if ($null -ne $row) {
+        $p = $row.Cells['CurrentPath'].Value
+        if ($p -and $p -ne 'N/A') {
+            $dir = Split-Path $p -Parent
+            if (Test-Path $dir) { Start-Process explorer.exe $dir }
+        }
+    }
+})
+
+
 # --- 10. Boutons selection ---
 
 $flowSel = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -364,6 +396,8 @@ function Update-UI-Language {
     $btnApply.Text = T "BtnApply"
     $btnRes.Text = T "BtnDefault"
     $btnLang.Text = T "BtnLang"
+    $miOpenPath.Text = T "CtxOpenPath"
+    $miOpenDir.Text = T "CtxOpenDir"
     
     $dgv.Columns['Active'].HeaderText = T "ColActive"
     $dgv.Columns['Journal'].HeaderText = T "ColJournal"
@@ -448,92 +482,8 @@ function Restore-Backup {
     }
 }
 
-# --- 16. BackgroundWorker ---
-$bgWorker = New-Object System.ComponentModel.BackgroundWorker
-$bgWorker.WorkerReportsProgress = $true
+# --- 16. (Supprime BackgroundWorker pour stabilite) ---
 
-$bgWorker.Add_DoWork({
-    param($worker, $e)
-    $data = $e.Argument
-    $path = $data.Path
-    $settings = $data.Settings
-    $results = @()
-
-    if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
-
-    $acl = Get-Acl $path
-    $ruleSystem = New-Object System.Security.AccessControl.FileSystemAccessRule('SYSTEM', 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-    $acl.SetAccessRule($ruleSystem)
-    try {
-        $ruleEvt = New-Object System.Security.AccessControl.FileSystemAccessRule('NT SERVICE\EventLog', 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-        $acl.AddAccessRule($ruleEvt)
-    } catch {}
-    Set-Acl $path $acl
-
-    foreach ($s in $settings) {
-        $logName = $s.Name
-        switch ($s.Mode) {
-            'Circular' { $rt = 'false'; $ab = 'false' }
-            'AutoBackup' { $rt = 'true'; $ab = 'true' }
-            'OverwriteAsNeeded' { $rt = 'false'; $ab = 'false' }
-        }
-        $cmdArgs = @('sl', $logName, "/lf:`"$(Join-Path $path ($logName + '.evtx'))`"", "/ms:$([int]$s.Size * 1MB)", "/rt:$rt")
-        if ($ab) { $cmdArgs += '/ab:true' }
-
-        $errPath = Join-Path $env:TEMP ("wevt_err_$logName.txt")
-        $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru -RedirectStandardError $errPath
-        $errMsg = if (Test-Path $errPath) { (Get-Content $errPath -Raw).Trim(); Remove-Item $errPath -Force } else { "" }
-
-        $res = [PSCustomObject]@{ Name = $logName; Size = $s.Size; Mode = $s.Mode; ExitCode = $proc.ExitCode; Error = $errMsg }
-        $results += $res
-        $worker.ReportProgress([math]::Floor(($results.Count / $settings.Count) * 100), $res)
-    }
-    $e.Result = $results
-})
-
-$bgWorker.Add_ProgressChanged({
-    param($worker, $e)
-    $progressBar.Value = $e.ProgressPercentage
-    $res = $e.UserState
-    if ($res.ExitCode -eq 0) {
-        Write-Log ($res.Name + " | " + $res.Size + " MB | " + $res.Mode) $green
-    } else {
-        Write-Log ($res.Name + " | FAIL (" + $res.ExitCode + ") : " + $res.Error) $redc
-    }
-})
-
-$bgWorker.Add_RunWorkerCompleted({
-    param($worker, $e)
-    $progressBar.Visible = $false
-    $btnApply.Enabled = $true
-    $btnRes.Enabled = $true
-
-    if ($e.Error) { Write-Log (T "LogErrCrit" $e.Error.Message) $redc }
-    else {
-        $results = $e.Result
-        $successful = ($results | Where-Object { $_.ExitCode -eq 0 }).Count
-        $failed = $results.Count - $successful
-        
-        Write-Log "-----------------------------------------------"
-        Write-Log (T "LogFinished" $successful $failed) (if ($failed -eq 0) { $green } else { $orange })
-        Write-Audit (T "LogFinished" $successful $failed)
-
-        $txtPath.Text | Out-File $configFile -Encoding UTF8
-
-        if ($failed -gt 0) {
-            $rate = ($failed / $results.Count) * 100
-            if ($rate -ge 50) {
-                Write-Log (T "LogRbStart") $redc
-                $rb = Restore-Backup $backupFile
-                if ($rb) { [System.Windows.Forms.MessageBox]::Show((T "MsgRbSuccess" $failed $results.Count), 'Rollback', 0, 48) | Out-Null }
-                else { [System.Windows.Forms.MessageBox]::Show((T "MsgRbFail" $failed $results.Count $backupFile), 'Error', 0, 16) | Out-Null }
-            } else {
-                $fLogs = ($results | Where-Object { $_.ExitCode -ne 0 }).Name -join ', '
-                if ([System.Windows.Forms.MessageBox]::Show((T "MsgPartFail" $fLogs), '?', 4, 32) -eq 'Yes') { Restore-Backup $backupFile ($results | Where-Object { $_.ExitCode -ne 0 }).Name }
-            }
-        } else { Write-Log (T "LogSuccess") $green }
-    }
-})
 
 # --- 17. Event Clic Appliquer ---
 $btnApply.Add_Click({
@@ -570,7 +520,62 @@ $btnApply.Add_Click({
     
     $txtOutput.Clear(); $progressBar.Visible=$true; $progressBar.Value=0; $btnApply.Enabled=$false; $btnRes.Enabled=$false
     Write-Log (T "LogBgStart")
-    $bgWorker.RunWorkerAsync(@{ Path = $path; Settings = $settings })
+    
+    $results = @()
+    foreach ($s in $settings) {
+        [System.Windows.Forms.Application]::DoEvents()
+        $logName = $s.Name
+        switch ($s.Mode) {
+            'Circular' { $rt = 'false'; $ab = 'false' }
+            'AutoBackup' { $rt = 'true'; $ab = 'true' }
+            'OverwriteAsNeeded' { $rt = 'false'; $ab = 'false' }
+        }
+        $cmdArgs = @('sl', $logName, "/lf:`"$(Join-Path $path ($logName + '.evtx'))`"", "/ms:$([int]$s.Size * 1MB)", "/rt:$rt")
+        if ($ab) { $cmdArgs += '/ab:true' }
+
+        $errPath = Join-Path $env:TEMP ("wevt_err_$logName.txt")
+        $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru -RedirectStandardError $errPath
+        $errMsg = if (Test-Path $errPath) { (Get-Content $errPath -Raw).Trim(); Remove-Item $errPath -Force } else { "" }
+
+        $res = [PSCustomObject]@{ Name = $logName; Size = $s.Size; Mode = $s.Mode; ExitCode = $proc.ExitCode; Error = $errMsg }
+        $results += $res
+        
+        # Mise a jour UI directe
+        $progressBar.Value = [math]::Floor(($results.Count / $settings.Count) * 100)
+        if ($res.ExitCode -eq 0) {
+            Write-Log ($res.Name + " | " + $res.Size + " MB | " + $res.Mode) $green
+        } else {
+            Write-Log ($res.Name + " | FAIL (" + $res.ExitCode + ") : " + $res.Error) $redc
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    # Finalisation (Copie de l'ancienne logique RunWorkerCompleted)
+    $progressBar.Visible = $false
+    $btnApply.Enabled = $true
+    $btnRes.Enabled = $true
+
+    $successful = ($results | Where-Object { $_.ExitCode -eq 0 }).Count
+    $failed = $results.Count - $successful
+    
+    Write-Log "-----------------------------------------------"
+    Write-Log (T "LogFinished" $successful $failed) (if ($failed -eq 0) { $green } else { $orange })
+    Write-Audit (T "LogFinished" $successful $failed)
+
+    $txtPath.Text | Out-File $configFile -Encoding UTF8
+
+    if ($failed -gt 0) {
+        $rate = ($failed / $results.Count) * 100
+        if ($rate -ge 50) {
+            Write-Log (T "LogRbStart") $redc
+            $rb = Restore-Backup $backupFile
+            if ($rb) { [System.Windows.Forms.MessageBox]::Show((T "MsgRbSuccess" $failed $results.Count), 'Rollback', 0, 48) | Out-Null }
+            else { [System.Windows.Forms.MessageBox]::Show((T "MsgRbFail" $failed $results.Count $backupFile), 'Error', 0, 16) | Out-Null }
+        } else {
+            $fLogs = ($results | Where-Object { $_.ExitCode -ne 0 }).Name -join ', '
+            if ([System.Windows.Forms.MessageBox]::Show((T "MsgPartFail" $fLogs), '?', 4, 32) -eq 'Yes') { Restore-Backup $backupFile ($results | Where-Object { $_.ExitCode -ne 0 }).Name }
+        }
+    } else { Write-Log (T "LogSuccess") $green }
 })
 
 $btnAll.Add_Click({ foreach ($r in $dgv.Rows) { $r.Cells['Active'].Value = $true } })
