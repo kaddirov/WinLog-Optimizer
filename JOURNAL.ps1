@@ -10,10 +10,7 @@
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show('Ce script doit etre execute en tant qu Administrateur.',
-        'Erreur de droits',
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Error)
+    [System.Windows.Forms.MessageBox]::Show('Ce script doit etre execute en tant qu Administrateur.', 'Erreur de droits', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     exit 1
 }
 
@@ -183,7 +180,7 @@ $colMode.FillWeight = 18
 
 # Validation en temps reel
 $dgv.Add_CellValueChanged({
-    param($sender, $e)
+    param($gridSource, $e)
     if ($e.RowIndex -lt 0 -or $dgv.Rows[$e.RowIndex].IsNewRow) { return }
     if ($e.ColumnIndex -eq $dgv.Columns['TailleMo'].Index) {
         $val = $dgv.Rows[$e.RowIndex].Cells['TailleMo'].Value
@@ -331,10 +328,10 @@ function Write-Audit {
 }
 
 function Restore-Backup {
-    param($backupPath)
+    param($backupPath, $onlyLogs = $null)
     
     if (-not (Test-Path $backupPath)) {
-        Write-Log "Aucun fichier de sauvegarde trouvé." $redc
+        Write-Log ("ERREUR : Fichier de sauvegarde introuvable (" + $backupPath + ")") $redc
         return $false
     }
     
@@ -343,18 +340,21 @@ function Restore-Backup {
         $restored = 0
         $failed = 0
         
-        Write-Log "Restauration de la configuration précédente..." $orange
+        Write-Log "Restauration de la configuration precedente..." $orange
         
         foreach ($entry in $backup) {
             $logName = $entry.Journal
+            if ($null -ne $onlyLogs -and $onlyLogs -notcontains $logName) {
+                continue
+            }
             $size = $entry.Taille
             $mode = $entry.Mode
             
             # Mapping wevtutil pour rollback
             switch ($mode) {
-                'Circular' { $rt = 'false'; $ab = $false }
-                'AutoBackup' { $rt = 'true'; $ab = $true }
-                'OverwriteAsNeeded' { $rt = 'false'; $ab = $false }
+                'Circular' { $rt = 'false'; $ab = 'false' }
+                'AutoBackup' { $rt = 'true'; $ab = 'true' }
+                'OverwriteAsNeeded' { $rt = 'false'; $ab = 'false' }
             }
             
             $bytes = [int]$size * 1MB
@@ -369,19 +369,21 @@ function Restore-Backup {
             $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru
             if ($proc.ExitCode -eq 0) {
                 $restored++
-                Write-Log "  ✓ $logName restauré" $green
+                Write-Log ("  [OK] " + $logName + " restaure") $green
             } else {
                 $failed++
-                Write-Log "  ✗ $logName échec (code $($proc.ExitCode))" $redc
+                Write-Log ("  [FAIL] " + $logName + " echec (code " + $proc.ExitCode + ")") $redc
             }
         }
         
-        Write-Log "Rollback terminé : $restored restaurés, $failed échecs" $(if ($failed -eq 0) { $green } else { $orange })
-        Write-Audit "Rollback effectué : $restored restaurés, $failed échecs"
+        $rbColor = $orange
+        if ($failed -eq 0) { $rbColor = $green }
+        Write-Log ("Rollback termine : " + $restored + " restaures, " + $failed + " echecs") $rbColor
+        Write-Audit ("Rollback effectue : " + $restored + " restaures, " + $failed + " echecs")
         return ($failed -eq 0)
     } catch {
-        Write-Log "ERREUR lors du rollback : $($_.Exception.Message)" $redc
-        Write-Audit "ERREUR rollback : $($_.Exception.Message)"
+        Write-Log ("ERREUR lors du rollback : " + $_.Exception.Message) $redc
+        Write-Audit ("ERREUR rollback : " + $_.Exception.Message)
         return $false
     }
 }
@@ -393,7 +395,7 @@ $bgWorker.WorkerSupportsCancellation = $true
 
 # Preparer les donnees a traiter
 $bgWorker.Add_DoWork({
-    param($sender, $e)
+    param($worker, $e)
     $data     = $e.Argument
     $path     = $data.Path
     $settings = $data.Settings
@@ -412,7 +414,9 @@ $bgWorker.Add_DoWork({
     try {
         $ruleEvt = New-Object System.Security.AccessControl.FileSystemAccessRule('NT SERVICE\EventLog', 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($ruleEvt)
-    } catch {}
+    } catch {
+        # Ignorer
+    }
     Set-Acl $path $acl
 
     # 3. Application des changements
@@ -423,56 +427,69 @@ $bgWorker.Add_DoWork({
 
         # Mapping wevtutil
         switch ($mode) {
-            'Circular'          { $rt = 'false'; $ab = $false }
-            'AutoBackup'        { $rt = 'true';  $ab = $true }
-            'OverwriteAsNeeded' { $rt = 'false'; $ab = $false }
+            'Circular'          { $rt = 'false'; $ab = 'false' }
+            'AutoBackup'        { $rt = 'true';  $ab = 'true' }
+            'OverwriteAsNeeded' { $rt = 'false'; $ab = 'false' }
         }
         $bytes      = [int]$size * 1MB
-        $evtxPath   = Join-Path $path "$logName.evtx"
+        $evtxPath   = Join-Path $path ($logName + ".evtx")
 
         $cmdArgs = @('sl', $logName)
-        $cmdArgs += "/lf:`"$evtxPath`""
-        $cmdArgs += "/ms:$bytes"
-        $cmdArgs += "/rt:$rt"
+        $cmdArgs += ("/lf:`"" + $evtxPath + "`"")
+        $cmdArgs += ("/ms:" + $bytes)
+        $cmdArgs += ("/rt:" + $rt)
         if ($ab) { $cmdArgs += '/ab:true' }
 
         # Execution via Start-Process pour capturer la sortie
-        $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru -RedirectStandardError (Join-Path $env:TEMP "wevt_err_$logName.txt")
+        $errPath = Join-Path $env:TEMP ("wevt_err_" + $logName + ".txt")
+        $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru -RedirectStandardError $errPath
         $exitCode = $proc.ExitCode
 
-        $results += [PSCustomObject]@{
+        $errMsg = ""
+        if ($exitCode -ne 0 -and (Test-Path $errPath)) {
+            $errMsg = (Get-Content $errPath -Raw).Trim()
+        }
+
+        $resObj = [PSCustomObject]@{
             Name   = $logName
             Size   = $size
             Mode   = $mode
-            Status = if ($exitCode -eq 0) { 'OK' } else { "ERREUR $exitCode" }
+            Status = if ($exitCode -eq 0) { 'OK' } else { ("ERREUR " + $exitCode + ": " + $errMsg) }
             ExitCode = $exitCode
         }
+        $results += $resObj
 
         $progress = [math]::Floor(($results.Count / $total) * 100)
-        $sender.ReportProgress($progress, "$logName | $size Mo | $mode")
+        $worker.ReportProgress($progress, $resObj)
 
-        $errFile = Join-Path $env:TEMP "wevt_err_$logName.txt"
-        if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $errPath) { Remove-Item $errPath -Force -ErrorAction SilentlyContinue }
     }
 
     $e.Result = $results
 })
 
 $bgWorker.Add_ProgressChanged({
-    param($sender, $e)
+    param($worker, $e)
     $progressBar.Value = $e.ProgressPercentage
-    Write-Log $e.UserState.ToString() $green
+    $res = $e.UserState
+    if ($res.ExitCode -eq 0) {
+        $msg = $res.Name + " | " + $res.Size + " Mo | " + $res.Mode
+        Write-Log $msg $green
+    } else {
+        $msg = $res.Name + " | ECHEC (Code " + $res.ExitCode + ") : " + $res.Status
+        Write-Log $msg $redc
+    }
 })
 
 $bgWorker.Add_RunWorkerCompleted({
-    param($sender, $e)
+    param($worker, $e)
     $progressBar.Visible = $false
     $btnApply.Enabled     = $true
     $btnRes.Enabled      = $true
 
     if ($e.Error) {
-        Write-Log "ERREUR CRITIQUE : $($e.Error.Message)" $redc
-        [System.Windows.Forms.MessageBox]::Show("Une erreur est survenue : $($e.Error.Message)", 'Erreur', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        Write-Log ("ERREUR CRITIQUE : " + $e.Error.Message) $redc
+        [System.Windows.Forms.MessageBox]::Show(("Une erreur est survenue : " + $e.Error.Message), 'Erreur', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     } elseif ($e.Cancelled) {
         Write-Log "Operation annulee." $orange
     } else {
@@ -482,52 +499,45 @@ $bgWorker.Add_RunWorkerCompleted({
         $failed = ($results | Where-Object { $_.Status -ne 'OK' }).Count
         $total = $results.Count
         
-        Write-Log "Configuration terminee : $successful OK, $failed echecs" $(if ($failed -eq 0) { $green } else { $orange })
-        Write-Audit "Configuration appliquée avec $($successful) succes et $($failed) echecs."
+        $confColor = $orange
+        if ($failed -eq 0) { $confColor = $green }
+        Write-Log ("Configuration terminee : " + $successful + " OK, " + $failed + " echecs") $confColor
+        Write-Audit ("Configuration appliquee avec " + $successful + " succes et " + $failed + " echecs.")
 
         # Sauvegarder le chemin
         $txtPath.Text | Out-File $configFile -Encoding UTF8
 
-        # ROLLBACK AUTOMATIQUE si échec partiel ou total
+        # ROLLBACK AUTOMATIQUE si echec partiel ou total
         if ($failed -gt 0) {
             $failureRate = [math]::Round(($failed / $total) * 100)
-            Write-Log "Taux d'échec : $failureRate%" $orange
+            Write-Log ("Taux d echec : " + $failureRate + "%") $orange
             
-            # Si plus de 50% d'échecs, rollback automatique
+            # Si plus de 50% d'echecs, rollback automatique
             if ($failureRate -ge 50) {
-                Write-Log "!!! Échec critique (>50%) - Déclenchement du ROLLBACK automatique..." $redc
-                Write-Audit "ROLLBACK AUTOMATIQUE déclenché (taux échec: $failureRate%)"
+                Write-Log "!!! Echec critique (>50%) - Declenchement du ROLLBACK automatique..." $redc
+                Write-Audit ("ROLLBACK AUTOMATIQUE declenche (taux echec: " + $failureRate + "%)")
                 
                 $rollbackSuccess = Restore-Backup $backupFile
                 
                 if ($rollbackSuccess) {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "La configuration a échoué ($failed/$total).`n`nLe ROLLBACK a été effectué avec succès.`nVos anciens paramètres ont été restaurés.",
-                        'Rollback effectué',
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Warning
-                    ) | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show("La configuration a echoue ($failed/$total).`n`nLe ROLLBACK a ete effectue avec succes.`nVos anciens parametres ont ete restaures.", 'Rollback effectue', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
                 } else {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "La configuration a échoué ($failed/$total).`n`nATTENTION : Le ROLLBACK a également échoué !`nVérifiez le fichier de backup : $backupFile",
-                        'Erreur critique',
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Error
-                    ) | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show("La configuration a echoue ($failed/$total).`n`nATTENTION : Le ROLLBACK a egalement echoue !`nVerifiez le fichier de backup : $backupFile", 'Erreur critique', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
                 }
             } else {
-                # Moins de 50% d'échecs - simple avertissement
-                [System.Windows.Forms.MessageBox]::Show(
-                    "Certains journaux n'ont pas ete configures ($failed/$total).`n`nConsultez l'output pour les details.",
-                    'Avertissement',
-                    [System.Windows.Forms.MessageBoxButtons]::OK,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                ) | Out-Null
+                # Echec partiel - Proposer un rollback cible
+                $failedLogs = @($results | Where-Object { $_.Status -ne 'OK' } | Select-Object -ExpandProperty Name)
+                $msgPart = "Certains journaux n ont pas pu etre configures : " + ($failedLogs -join ', ') + ".`n`nVoulez-vous restaurer leur configuration precedente uniquement ?"
+                $ask = [System.Windows.Forms.MessageBox]::Show($msgPart, 'Echec partiel', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+                if ($ask -eq 'Yes') {
+                    $resPart = Restore-Backup $backupFile $failedLogs
+                    if ($resPart) { Write-Log "Rollback partiel effectue." $orange }
+                }
             }
         } else {
-            # Succès total
+            # Succes total
             Write-Log "Operation reussie avec succes !" $green
-            Write-Audit "Operation réussie - 100% de succès"
+            Write-Audit "Operation reussie - 100% de succes"
         }
     }
 })
@@ -535,11 +545,7 @@ $bgWorker.Add_RunWorkerCompleted({
 # --- 17. Evenement Appliquer ---
 $btnApply.Add_Click({
     # Confirmation
-    $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "Voulez-vous vraiment appliquer ces changements ?`nCela modifiera la configuration des journaux systeme.",
-        'Confirmation',
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Question)
+    $confirm = [System.Windows.Forms.MessageBox]::Show("Voulez-vous vraiment appliquer ces changements ?`nCela modifiera la configuration des journaux systeme.", 'Confirmation', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
     if ($confirm -eq 'No') { return }
 
     # Recuperer les donnees de la grille
@@ -560,9 +566,40 @@ $btnApply.Add_Click({
         return
     }
 
+    # 1. Verification du service EventLog
+    $svc = Get-Service -Name EventLog -ErrorAction SilentlyContinue
+    if ($null -eq $svc -or $svc.Status -ne 'Running') {
+        [System.Windows.Forms.MessageBox]::Show("Le service 'Windows Event Log' est arrete ou introuvable. Impossible d'appliquer les changements.", 'Erreur Service', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        return
+    }
+
     $path = $txtPath.Text.Trim()
     if (-not $path) {
         [System.Windows.Forms.MessageBox]::Show('Chemin de destination vide.', 'Erreur', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        return
+    }
+
+    if ($path.StartsWith('\\')) {
+        [System.Windows.Forms.MessageBox]::Show('Les chemins reseau (UNC) ne sont pas supportes pour le stockage des journaux actifs.', 'Chemin non supporte', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        return
+    }
+
+    if ($path -notmatch '^[a-zA-Z]:\\') {
+        [System.Windows.Forms.MessageBox]::Show('Veuillez specifier un chemin local valide (ex: E:\Logs).', 'Chemin invalide', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        return
+    }
+
+    # 2. Test d'ecriture NTFS (Pre-flight)
+    try {
+        if (-not (Test-Path $path)) {
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+        }
+        $testFile = Join-Path $path ("perm_test_" + (Get-Random) + ".tmp")
+        [System.IO.File]::WriteAllText($testFile, "test")
+        Remove-Item $testFile -Force
+    } catch {
+        $err = "Acces refuse au dossier (" + $path + "). Verifiez les droits NTFS.`n`nDetail : " + $_.Exception.Message
+        [System.Windows.Forms.MessageBox]::Show($err, 'Erreur NTFS', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         return
     }
 
@@ -574,7 +611,7 @@ $btnApply.Add_Click({
         $psDrive = Get-PSDrive -Name $driveLetter -ErrorAction Stop
         $availableGB = [math]::Round($psDrive.Free / 1GB, 2)
         $requiredGB  = [math]::Round(($totalSizeMB * 1MB) / 1GB, 2)
-        Write-Log "Espace disque disponible : $availableGB Go | Requis : $requiredGB Go"
+        Write-Log ("Espace disque disponible : " + $availableGB + " Go | Requis : " + $requiredGB + " Go")
         if ($psDrive.Free -lt ($totalSizeMB * 1MB)) {
             [System.Windows.Forms.MessageBox]::Show("Espace insuffisant sur le disque destination. Disponible : $availableGB Go, Requis : $requiredGB Go", 'Erreur', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
             return
@@ -594,8 +631,8 @@ $btnApply.Add_Click({
         }
     }
     $backupData | ConvertTo-Json -Depth 3 | Out-File $backupFile -Encoding UTF8
-    Write-Log "Sauvegarde creee : $backupFile"
-    Write-Audit "Sauvegarde de la configuration precedente dans $backupFile"
+    Write-Log ("Sauvegarde creee : " + $backupFile)
+    Write-Audit ("Sauvegarde de la configuration precedente dans " + $backupFile)
 
     # Lancer le travail en arriere-plan
     $txtOutput.Clear()
@@ -604,7 +641,7 @@ $btnApply.Add_Click({
     $btnApply.Enabled     = $false
     $btnRes.Enabled      = $false
     Write-Log "Demarrage de l'application en arriere-plan..."
-    Write-Audit "Demarrage de l'application des configurations pour les journaux : $($settings.Name -join ', ')"
+    Write-Audit "Demarrage de l'application des configurations pour les journaux"
 
     $bgWorker.RunWorkerAsync(@{ Path = $path; Settings = $settings })
 })
