@@ -322,7 +322,14 @@ $miOpenPath.Add_Click({
     $row = $dgv.CurrentRow
     if ($null -ne $row) {
         $p = $row.Cells['CurrentPath'].Value
-        if ($p -and $p -ne 'N/A' -and (Test-Path $p)) { Start-Process explorer.exe -ArgumentList "/select,`"$p`"" }
+        if ($p -and $p -ne 'N/A') {
+            $realPath = [System.Environment]::ExpandEnvironmentVariables($p)
+            if (Test-Path $realPath) { 
+                Start-Process explorer.exe -ArgumentList "/select,`"$realPath`"" 
+            } else {
+                Write-Log "Fichier introuvable : $realPath" $redc
+            }
+        }
     }
 })
 
@@ -331,11 +338,17 @@ $miOpenDir.Add_Click({
     if ($null -ne $row) {
         $p = $row.Cells['CurrentPath'].Value
         if ($p -and $p -ne 'N/A') {
-            $dir = Split-Path $p -Parent
-            if (Test-Path $dir) { Start-Process explorer.exe "`"$dir`"" }
+            $realPath = [System.Environment]::ExpandEnvironmentVariables($p)
+            $dir = Split-Path $realPath -Parent
+            if (Test-Path $dir) { 
+                Start-Process explorer.exe "`"$dir`"" 
+            } else {
+                Write-Log "Dossier introuvable : $dir" $redc
+            }
         }
     }
 })
+
 
 
 
