@@ -310,6 +310,14 @@ $miOpenPath = $ctxMenu.Items.Add((T "CtxOpenPath"))
 $miOpenDir = $ctxMenu.Items.Add((T "CtxOpenDir"))
 $dgv.ContextMenuStrip = $ctxMenu
 
+# Force la selection au clic droit
+$dgv.Add_CellMouseDown({
+    param($s, $e)
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right -and $e.RowIndex -ge 0) {
+        $dgv.CurrentCell = $dgv.Rows[$e.RowIndex].Cells[$e.ColumnIndex]
+    }
+})
+
 $miOpenPath.Add_Click({
     $row = $dgv.CurrentRow
     if ($null -ne $row) {
@@ -324,10 +332,11 @@ $miOpenDir.Add_Click({
         $p = $row.Cells['CurrentPath'].Value
         if ($p -and $p -ne 'N/A') {
             $dir = Split-Path $p -Parent
-            if (Test-Path $dir) { Start-Process explorer.exe $dir }
+            if (Test-Path $dir) { Start-Process explorer.exe "`"$dir`"" }
         }
     }
 })
+
 
 
 # --- 10. Boutons selection ---
