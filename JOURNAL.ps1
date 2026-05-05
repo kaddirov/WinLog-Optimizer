@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Configuration avancee des journaux d'evenements Windows avec securite et audit.
 .DESCRIPTION
@@ -330,6 +330,63 @@ function Write-Audit {
     Add-Content -Path $auditFile -Value $line -Encoding UTF8
 }
 
+function Restore-Backup {
+    param($backupPath)
+    
+    if (-not (Test-Path $backupPath)) {
+        Write-Log "Aucun fichier de sauvegarde trouvé." $redc
+        return $false
+    }
+    
+    try {
+        $backup = Get-Content $backupPath -Raw | ConvertFrom-Json
+        $restored = 0
+        $failed = 0
+        
+        Write-Log "Restauration de la configuration précédente..." $orange
+        
+        foreach ($entry in $backup) {
+            $logName = $entry.Journal
+            $size = $entry.Taille
+            $mode = $entry.Mode
+            
+            # Mapping wevtutil pour rollback
+            switch ($mode) {
+                'Circular' { $rt = 'false'; $ab = $false }
+                'AutoBackup' { $rt = 'true'; $ab = $true }
+                'OverwriteAsNeeded' { $rt = 'false'; $ab = $false }
+            }
+            
+            $bytes = [int]$size * 1MB
+            $currentPath = $entry.CurrentPath
+            if ([string]::IsNullOrEmpty($currentPath)) {
+                $currentPath = $env:SystemDrive + '\EVT\' + $logName + '.evtx'
+            }
+            
+            $cmdArgs = @('sl', $logName, "/lf:`"$currentPath`"", "/ms:$bytes", "/rt:$rt")
+            if ($ab) { $cmdArgs += '/ab:true' }
+            
+            $proc = Start-Process wevtutil -ArgumentList $cmdArgs -Wait -PassThru
+            if ($proc.ExitCode -eq 0) {
+                $restored++
+                Write-Log "  ✓ $logName restauré" $green
+            } else {
+                $failed++
+                Write-Log "  ✗ $logName échec (code $($proc.ExitCode))" $redc
+            }
+        }
+        
+        Write-Log "Rollback terminé : $restored restaurés, $failed échecs" $(if ($failed -eq 0) { $green } else { $orange })
+        Write-Audit "Rollback effectué : $restored restaurés, $failed échecs"
+        return ($failed -eq 0)
+    }
+    catch {
+        Write-Log "ERREUR lors du rollback : $($_.Exception.Message)" $redc
+        Write-Audit "ERREUR rollback : $($_.Exception.Message)"
+        return $false
+    }
+}
+
 # --- 16. BackgroundWorker (async) ---
 $bgWorker = New-Object System.ComponentModel.BackgroundWorker
 $bgWorker.WorkerReportsProgress       = $true
@@ -349,10 +406,14 @@ $bgWorker.Add_DoWork({
         New-Item -ItemType Directory -Path $path -Force | Out-Null
     }
 
-    # 2. Droits SYSTEM
+    # 2. Droits SYSTEM et EventLog
     $acl   = Get-Acl $path
     $rule  = New-Object System.Security.AccessControl.FileSystemAccessRule('SYSTEM', 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
     $acl.SetAccessRule($rule)
+    try {
+        $ruleEvt = New-Object System.Security.AccessControl.FileSystemAccessRule('NT SERVICE\EventLog', 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        $acl.AddAccessRule($ruleEvt)
+    } catch {}
     Set-Acl $path $acl
 
     # 3. Application des changements
@@ -390,6 +451,9 @@ $bgWorker.Add_DoWork({
 
         $progress = [math]::Floor(($results.Count / $total) * 100)
         $sender.ReportProgress($progress, "$logName | $size Mo | $mode")
+
+        $errFile = Join-Path $env:TEMP "wevt_err_$logName.txt"
+        if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
     }
 
     $e.Result = $results
@@ -416,16 +480,55 @@ $bgWorker.Add_RunWorkerCompleted({
         $results = $e.Result
         Write-Log "-----------------------------------------------"
         $successful = ($results | Where-Object { $_.Status -eq 'OK' }).Count
-        $failed     = ($results | Where-Object { $_.Status -ne 'OK' }).Count
-        Write-Log "Configuration terminee : $successful OK, $failed echecs" $green
+        $failed = ($results | Where-Object { $_.Status -ne 'OK' }).Count
+        $total = $results.Count
+        
+        Write-Log "Configuration terminee : $successful OK, $failed echecs" $(if ($failed -eq 0) { $green } else { $orange })
         Write-Audit "Configuration appliquée avec $($successful) succes et $($failed) echecs."
 
         # Sauvegarder le chemin
         $txtPath.Text | Out-File $configFile -Encoding UTF8
 
-        # Verification echecs
+        # ROLLBACK AUTOMATIQUE si échec partiel ou total
         if ($failed -gt 0) {
-            [System.Windows.Forms.MessageBox]::Show("Certains journaux n'ont pas ete configures. Consultez le ouput pour les details.", 'Avertissement', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            $failureRate = [math]::Round(($failed / $total) * 100)
+            Write-Log "Taux d'échec : $failureRate%" $orange
+            
+            # Si plus de 50% d'échecs, rollback automatique
+            if ($failureRate -ge 50) {
+                Write-Log "!!! Échec critique (>50%) - Déclenchement du ROLLBACK automatique..." $redc
+                Write-Audit "ROLLBACK AUTOMATIQUE déclenché (taux échec: $failureRate%)"
+                
+                $rollbackSuccess = Restore-Backup $backupFile
+                
+                if ($rollbackSuccess) {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "La configuration a échoué ($failed/$total).`n`nLe ROLLBACK a été effectué avec succès.`nVos anciens paramètres ont été restaurés.",
+                        'Rollback effectué',
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    ) | Out-Null
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "La configuration a échoué ($failed/$total).`n`nATTENTION : Le ROLLBACK a également échoué !`nVérifiez le fichier de backup : $backupFile",
+                        'Erreur critique',
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Error
+                    ) | Out-Null
+                }
+            } else {
+                # Moins de 50% d'échecs - simple avertissement
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Certains journaux n'ont pas ete configures ($failed/$total).`n`nConsultez l'output pour les details.",
+                    'Avertissement',
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                ) | Out-Null
+            }
+        } else {
+            # Succès total
+            Write-Log "Operation reussie avec succes !" $green
+            Write-Audit "Operation réussie - 100% de succès"
         }
     }
 })
