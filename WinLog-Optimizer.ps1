@@ -29,6 +29,8 @@ $i18n = @{
         BtnApplyAllSize = "Appliquer a tous"
         LblAddLog       = "Ajouter un journal :"
         BtnAddLog       = "Ajouter"
+        BtnScan         = "Scanner tout le serveur"
+        LblSearch       = "Rechercher :"
         ToolMode        = "Mode Circular : ecrase les anciens logs`nMode AutoBackup : archive le log plein`nMode OverwriteAsNeeded : ecrase sans archive"
         
         MsgAdminErr     = "Ce script doit etre execute en tant qu'Administrateur."
@@ -87,6 +89,8 @@ $i18n = @{
         BtnApplyAllSize = "Apply to All"
         LblAddLog       = "Add a custom log:"
         BtnAddLog       = "Add"
+        BtnScan         = "Scan Entire Server"
+        LblSearch       = "Search / Filter:"
         ToolMode        = "Circular Mode: overwrites old logs`nAutoBackup Mode: archives full logs`nOverwriteAsNeeded: overwrites without archive"
         
         MsgAdminErr     = "This script must be run as Administrator."
@@ -358,48 +362,59 @@ $miOpenDir.Add_Click({
 
 
 
-# Barre d'ajout personnalisee
+# Barre d'outils avancee (Scan & Recherche)
 $flowAdd = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowAdd.Location = New-Object System.Drawing.Point(20, 350)
 $flowAdd.Size = New-Object System.Drawing.Size(765, 30)
 $flowAdd.FlowDirection = 'LeftToRight'
 
-$lblAdd = New-Object System.Windows.Forms.Label
-$lblAdd.Text = T "LblAddLog"
-$lblAdd.AutoSize = $true
-$lblAdd.Margin = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
+$btnScan = New-Object System.Windows.Forms.Button
+$btnScan.Text = T "BtnScan"
+$btnScan.AutoSize = $true
+$btnScan.BackColor = $surface2
+$btnScan.FlatStyle = 'Flat'
+$btnScan.Margin = New-Object System.Windows.Forms.Padding(0, 0, 10, 0)
 
-$txtAdd = New-Object System.Windows.Forms.TextBox
-$txtAdd.Size = New-Object System.Drawing.Size(200, 24)
-$txtAdd.BackColor = $surface2
-$txtAdd.ForeColor = $text
-$txtAdd.BorderStyle = 'FixedSingle'
+$lblSearch = New-Object System.Windows.Forms.Label
+$lblSearch.Text = T "LblSearch"
+$lblSearch.AutoSize = $true
+$lblSearch.Margin = New-Object System.Windows.Forms.Padding(10, 5, 5, 0)
 
-$btnAddLog = New-Object System.Windows.Forms.Button
-$btnAddLog.Text = T "BtnAddLog"
-$btnAddLog.AutoSize = $true
-$btnAddLog.BackColor = $surface2
-$btnAddLog.FlatStyle = 'Flat'
+$txtSearch = New-Object System.Windows.Forms.TextBox
+$txtSearch.Size = New-Object System.Drawing.Size(200, 24)
+$txtSearch.BackColor = $surface2
+$txtSearch.ForeColor = $text
+$txtSearch.BorderStyle = 'FixedSingle'
 
-$flowAdd.Controls.AddRange(@($lblAdd, $txtAdd, $btnAddLog))
+$flowAdd.Controls.AddRange(@($btnScan, $lblSearch, $txtSearch))
 
-$btnAddLog.Add_Click({
-    $name = $txtAdd.Text.Trim()
-    if (-not $name) { return }
+$btnScan.Add_Click({
+    Write-Log (T "LogInit") $accent
+    $existing = @()
+    foreach ($r in $dgv.Rows) { $existing += $r.Cells['Journal'].Value }
     
-    # Verifier si deja present
-    foreach ($r in $dgv.Rows) { if ($r.Cells['Journal'].Value -eq $name) { return } }
+    # On cherche les journaux Administratifs/Operationnels actifs
+    $allLogs = Get-WinEvent -ListLog * | Where-Object { $_.IsEnabled -and $_.LogType -ne 'Analytical' -and $_.LogType -ne 'Debug' }
     
-    try {
-        $logObj = Get-WinEvent -ListLog $name -ErrorAction Stop
-        $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
-        [void]$dgv.Rows.Add($true, $name, $logObj.LogFilePath, $sizeMB, $logObj.LogMode.ToString())
-        $txtAdd.Clear()
-        $lblCount.Text = T "LblCount" $dgv.Rows.Count
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show((T "MsgLogNotFound" $name), 'Error', 0, 16) | Out-Null
+    foreach ($l in $allLogs) {
+        if ($existing -notcontains $l.LogName) {
+            $sizeMB = [math]::Ceiling($l.MaximumSizeInBytes / 1MB)
+            [void]$dgv.Rows.Add($true, $l.LogName, $l.LogFilePath, $sizeMB, $l.LogMode.ToString())
+        }
+    }
+    $lblCount.Text = T "LblCount" $dgv.Rows.Count
+})
+
+$txtSearch.Add_TextChanged({
+    $filter = $txtSearch.Text.Trim()
+    $dgv.CurrentCell = $null # Evite les erreurs de focus
+    foreach ($r in $dgv.Rows) {
+        if ($null -ne $r.Cells['Journal'].Value) {
+            $r.Visible = ($r.Cells['Journal'].Value -match $filter)
+        }
     }
 })
+
 
 # --- 10. Boutons selection ---
 $flowSel = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -513,11 +528,12 @@ function Update-UI-Language {
     
     $lblBulk.Text = T "LblGlobalSize"
     $btnBulkSize.Text = T "BtnApplyAllSize"
-    $lblAdd.Text = T "LblAddLog"
-    $btnAddLog.Text = T "BtnAddLog"
+    $btnScan.Text = T "BtnScan"
+    $lblSearch.Text = T "LblSearch"
     
     $lblCount.Text = T "LblCount" $dgv.Rows.Count
 }
+
 
 
 $btnLang.Add_Click({
