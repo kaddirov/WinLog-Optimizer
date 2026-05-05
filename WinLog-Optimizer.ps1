@@ -27,6 +27,8 @@ $i18n = @{
         BtnLang         = "Lang: FR"
         LblGlobalSize   = "Taille globale (Mo) :"
         BtnApplyAllSize = "Appliquer a tous"
+        LblAddLog       = "Ajouter un journal :"
+        BtnAddLog       = "Ajouter"
         ToolMode        = "Mode Circular : ecrase les anciens logs`nMode AutoBackup : archive le log plein`nMode OverwriteAsNeeded : ecrase sans archive"
         
         MsgAdminErr     = "Ce script doit etre execute en tant qu'Administrateur."
@@ -45,6 +47,7 @@ $i18n = @{
         MsgRbSuccess    = "La configuration a echoue ({0}/{1}).`n`nLe ROLLBACK a ete effectue avec succes.`nVos anciens parametres ont ete restaures."
         MsgRbFail       = "La configuration a echoue ({0}/{1}).`n`nATTENTION : Le ROLLBACK a egalement echoue !`nVerifiez le fichier de backup : {2}"
         MsgPartFail     = "Certains journaux n'ont pas pu etre configures : {0}.`n`nVoulez-vous restaurer leur configuration precedente uniquement ?"
+        MsgLogNotFound  = "Le journal '{0}' est introuvable sur ce serveur."
         
         LogInit         = "Initialisation de l'interface..."
         LogAdminOk      = "Droits Administrateur verifies."
@@ -82,6 +85,8 @@ $i18n = @{
         BtnLang         = "Lang: EN"
         LblGlobalSize   = "Global Size (MB):"
         BtnApplyAllSize = "Apply to All"
+        LblAddLog       = "Add a custom log:"
+        BtnAddLog       = "Add"
         ToolMode        = "Circular Mode: overwrites old logs`nAutoBackup Mode: archives full logs`nOverwriteAsNeeded: overwrites without archive"
         
         MsgAdminErr     = "This script must be run as Administrator."
@@ -100,6 +105,7 @@ $i18n = @{
         MsgRbSuccess    = "Configuration failed ({0}/{1}).`n`nROLLBACK completed successfully.`nYour previous settings have been restored."
         MsgRbFail       = "Configuration failed ({0}/{1}).`n`nWARNING: ROLLBACK also failed!`nCheck backup file: {2}"
         MsgPartFail     = "Some logs could not be configured: {0}.`n`nDo you want to restore their previous configuration only?"
+        MsgLogNotFound  = "The log '{0}' was not found on this server."
         
         LogInit         = "Initializing interface..."
         LogAdminOk      = "Administrator rights verified."
@@ -352,10 +358,52 @@ $miOpenDir.Add_Click({
 
 
 
-# --- 10. Boutons selection ---
+# Barre d'ajout personnalisee
+$flowAdd = New-Object System.Windows.Forms.FlowLayoutPanel
+$flowAdd.Location = New-Object System.Drawing.Point(20, 350)
+$flowAdd.Size = New-Object System.Drawing.Size(765, 30)
+$flowAdd.FlowDirection = 'LeftToRight'
 
+$lblAdd = New-Object System.Windows.Forms.Label
+$lblAdd.Text = T "LblAddLog"
+$lblAdd.AutoSize = $true
+$lblAdd.Margin = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
+
+$txtAdd = New-Object System.Windows.Forms.TextBox
+$txtAdd.Size = New-Object System.Drawing.Size(200, 24)
+$txtAdd.BackColor = $surface2
+$txtAdd.ForeColor = $text
+$txtAdd.BorderStyle = 'FixedSingle'
+
+$btnAddLog = New-Object System.Windows.Forms.Button
+$btnAddLog.Text = T "BtnAddLog"
+$btnAddLog.AutoSize = $true
+$btnAddLog.BackColor = $surface2
+$btnAddLog.FlatStyle = 'Flat'
+
+$flowAdd.Controls.AddRange(@($lblAdd, $txtAdd, $btnAddLog))
+
+$btnAddLog.Add_Click({
+    $name = $txtAdd.Text.Trim()
+    if (-not $name) { return }
+    
+    # Verifier si deja present
+    foreach ($r in $dgv.Rows) { if ($r.Cells['Journal'].Value -eq $name) { return } }
+    
+    try {
+        $logObj = Get-WinEvent -ListLog $name -ErrorAction Stop
+        $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
+        [void]$dgv.Rows.Add($true, $name, $logObj.LogFilePath, $sizeMB, $logObj.LogMode.ToString())
+        $txtAdd.Clear()
+        $lblCount.Text = T "LblCount" $dgv.Rows.Count
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show((T "MsgLogNotFound" $name), 'Error', 0, 16) | Out-Null
+    }
+})
+
+# --- 10. Boutons selection ---
 $flowSel = New-Object System.Windows.Forms.FlowLayoutPanel
-$flowSel.Location = New-Object System.Drawing.Point(20, 355)
+$flowSel.Location = New-Object System.Drawing.Point(20, 385)
 $flowSel.Size = New-Object System.Drawing.Size(210, 30)
 
 $btnAll = New-Object System.Windows.Forms.Button
@@ -374,7 +422,7 @@ $flowSel.Controls.AddRange(@($btnAll, $btnNone))
 
 # Actions Groupees
 $flowBulk = New-Object System.Windows.Forms.FlowLayoutPanel
-$flowBulk.Location = New-Object System.Drawing.Point(235, 355)
+$flowBulk.Location = New-Object System.Drawing.Point(235, 385)
 $flowBulk.Size = New-Object System.Drawing.Size(550, 30)
 $flowBulk.FlowDirection = 'LeftToRight'
 
@@ -406,13 +454,13 @@ $btnBulkSize.Add_Click({
 
 # --- 11. ProgressBar ---
 $progressBar = New-Object System.Windows.Forms.ProgressBar
-$progressBar.Location = New-Object System.Drawing.Point(20, 395)
+$progressBar.Location = New-Object System.Drawing.Point(20, 420)
 $progressBar.Size = New-Object System.Drawing.Size(765, 10)
 $progressBar.Visible = $false
 
 # --- 12. Boutons Actions ---
 $flowAct = New-Object System.Windows.Forms.FlowLayoutPanel
-$flowAct.Location = New-Object System.Drawing.Point(20, 415)
+$flowAct.Location = New-Object System.Drawing.Point(20, 440)
 $flowAct.Size = New-Object System.Drawing.Size(765, 36)
 
 $btnApply = New-Object System.Windows.Forms.Button
@@ -435,8 +483,8 @@ $flowAct.Controls.AddRange(@($btnApply, $btnRes))
 
 # --- 13. Output ---
 $txtOutput = New-Object System.Windows.Forms.RichTextBox
-$txtOutput.Location = New-Object System.Drawing.Point(20, 462)
-$txtOutput.Size = New-Object System.Drawing.Size(765, 160)
+$txtOutput.Location = New-Object System.Drawing.Point(20, 485)
+$txtOutput.Size = New-Object System.Drawing.Size(765, 137)
 $txtOutput.ReadOnly = $true
 $txtOutput.BackColor = $surface
 $txtOutput.ForeColor = $text
@@ -463,10 +511,14 @@ function Update-UI-Language {
     $dgv.Columns['TailleMo'].HeaderText = T "ColSize"
     $dgv.Columns['Mode'].HeaderText = T "ColMode"
     
-    $lblCount.Text = T "LblCount" $targetLogs.Count
     $lblBulk.Text = T "LblGlobalSize"
     $btnBulkSize.Text = T "BtnApplyAllSize"
+    $lblAdd.Text = T "LblAddLog"
+    $btnAddLog.Text = T "BtnAddLog"
+    
+    $lblCount.Text = T "LblCount" $dgv.Rows.Count
 }
+
 
 $btnLang.Add_Click({
     $script:currentLang = if ($script:currentLang -eq "FR") { "EN" } else { "FR" }
@@ -652,7 +704,7 @@ $btnRes.Add_Click({ foreach ($r in $dgv.Rows) {
 } })
 
 # --- 18. Lancement ---
-$form.Controls.AddRange(@($panelH, $lblP, $txtPath, $btnBr, $lblGH, $lblCount, $dgv, $flowSel, $flowBulk, $progressBar, $flowAct, $txtOutput))
+$form.Controls.AddRange(@($panelH, $lblP, $txtPath, $btnBr, $lblGH, $lblCount, $dgv, $flowAdd, $flowSel, $flowBulk, $progressBar, $flowAct, $txtOutput))
 $panelH.Controls.Add($btnLang)
 
 # --- Chargement des donnees ---
