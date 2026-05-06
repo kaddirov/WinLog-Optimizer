@@ -289,31 +289,38 @@ $colActive = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
 $colActive.HeaderText = T "ColActive"
 $colActive.Name = 'Active'
 $colActive.FillWeight = 8
+$colActive.SortMode = 'Automatic'
 
 $colName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colName.HeaderText = T "ColJournal"
 $colName.Name = 'Journal'
 $colName.ReadOnly = $true
 $colName.FillWeight = 20
+$colName.SortMode = 'Automatic'
 
 $colPath = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colPath.HeaderText = T "ColPath"
 $colPath.Name = 'CurrentPath'
 $colPath.ReadOnly = $true
 $colPath.FillWeight = 35
+$colPath.SortMode = 'Automatic'
 
 $colSize = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $colSize.HeaderText = T "ColSize"
 $colSize.Name = 'TailleMo'
 $colSize.FillWeight = 15
+$colSize.ValueType = [int]
+$colSize.SortMode = 'Automatic'
 
 $colMode = New-Object System.Windows.Forms.DataGridViewComboBoxColumn
 $colMode.HeaderText = T "ColMode"
 $colMode.Name = 'Mode'
 [void]$colMode.Items.AddRange('Circular', 'AutoBackup', 'OverwriteAsNeeded')
 $colMode.FillWeight = 22
+$colMode.SortMode = 'Automatic'
 
 [void]$dgv.Columns.AddRange($colActive, $colName, $colPath, $colSize, $colMode)
+
 $dgv.ColumnHeadersDefaultCellStyle.BackColor = $headerBg
 $dgv.ColumnHeadersDefaultCellStyle.ForeColor = $accent
 
