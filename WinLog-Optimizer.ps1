@@ -734,17 +734,32 @@ $form.Controls.AddRange(@($panelH, $lblP, $txtPath, $btnBr, $lblGH, $lblCount, $
 $panelH.Controls.Add($btnLang)
 
 # --- Chargement des donnees ---
-$targetLogs = @('Application', 'System', 'Security', 'Setup', 'ForwardedEvents')
 Write-Log (T "LogInit") $accent
-foreach ($logName in $targetLogs) {
-    try {
-        $logObj = Get-WinEvent -ListLog $logName -ErrorAction Stop
-        $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
-        $rawMode = $logObj.LogMode.ToString()
+try {
+    $activeLogs = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object { 
+        $_.IsEnabled -and 
+        $_.LogType -ne 'Analytical' -and 
+        $_.LogType -ne 'Debug' -and 
+        $_.FileSize -gt 0
+    }
+    foreach ($l in $activeLogs) {
+        $sizeMB = [math]::Ceiling($l.MaximumSizeInBytes / 1MB)
+        $rawMode = $l.LogMode.ToString()
         $cleanMode = if ($rawMode -match 'AutoBackup') { 'AutoBackup' } else { 'Circular' }
-        [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $cleanMode)
-    } catch {
-        [void]$dgv.Rows.Add($true, $logName, 'N/A', 20, 'Circular')
+        [void]$dgv.Rows.Add($true, $l.LogName, $l.LogFilePath, $sizeMB, $cleanMode)
+    }
+} catch {
+    $targetLogs = @('Application', 'System', 'Security', 'Setup', 'ForwardedEvents')
+    foreach ($logName in $targetLogs) {
+        try {
+            $logObj = Get-WinEvent -ListLog $logName -ErrorAction Stop
+            $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
+            $rawMode = $logObj.LogMode.ToString()
+            $cleanMode = if ($rawMode -match 'AutoBackup') { 'AutoBackup' } else { 'Circular' }
+            [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $cleanMode)
+        } catch {
+            [void]$dgv.Rows.Add($true, $logName, 'N/A', 20, 'Circular')
+        }
     }
 }
 
