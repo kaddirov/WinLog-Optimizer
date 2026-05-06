@@ -396,8 +396,13 @@ $btnScan.Add_Click({
     $existing = @()
     foreach ($r in $dgv.Rows) { $existing += $r.Cells['Journal'].Value }
     
-    # On cherche les journaux Administratifs/Operationnels actifs
-    $allLogs = Get-WinEvent -ListLog * | Where-Object { $_.IsEnabled -and $_.LogType -ne 'Analytical' -and $_.LogType -ne 'Debug' }
+    # On cherche les journaux Administratifs/Operationnels actifs et dont la taille est superieure a 0
+    $allLogs = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object { 
+        $_.IsEnabled -and 
+        $_.LogType -ne 'Analytical' -and 
+        $_.LogType -ne 'Debug' -and 
+        $_.FileSize -gt 0
+    }
     
     foreach ($l in $allLogs) {
         if ($existing -notcontains $l.LogName) {
