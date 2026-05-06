@@ -413,7 +413,7 @@ $btnScan.Add_Click({
     
     foreach ($l in $allLogs) {
         if ($existing -notcontains $l.LogName) {
-            $sizeMB = [math]::Ceiling($l.MaximumSizeInBytes / 1MB)
+            $sizeMB = [int][math]::Ceiling($l.MaximumSizeInBytes / 1MB)
             $rawMode = $l.LogMode.ToString()
             $cleanMode = if ($rawMode -match 'AutoBackup') { 'AutoBackup' } else { 'Circular' }
             [void]$dgv.Rows.Add($true, $l.LogName, $l.LogFilePath, $sizeMB, $cleanMode)
@@ -480,9 +480,10 @@ $flowBulk.Controls.AddRange(@($lblBulk, $txtBulkSize, $btnBulkSize))
 
 $btnBulkSize.Add_Click({
     if ($txtBulkSize.Text -match '^\d+$') {
-        foreach ($r in $dgv.Rows) { $r.Cells['TailleMo'].Value = $txtBulkSize.Text }
+        foreach ($r in $dgv.Rows) { $r.Cells['TailleMo'].Value = [int]$txtBulkSize.Text }
     }
 })
+
 
 # --- 11. ProgressBar ---
 $progressBar = New-Object System.Windows.Forms.ProgressBar
@@ -746,14 +747,15 @@ $targetLogs = @('Application', 'System', 'Security', 'Setup')
 foreach ($logName in $targetLogs) {
     try {
         $logObj = Get-WinEvent -ListLog $logName -ErrorAction Stop
-        $sizeMB = [math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
+        $sizeMB = [int][math]::Ceiling($logObj.MaximumSizeInBytes / 1MB)
         $rawMode = $logObj.LogMode.ToString()
         $cleanMode = if ($rawMode -match 'AutoBackup') { 'AutoBackup' } else { 'Circular' }
         [void]$dgv.Rows.Add($true, $logName, $logObj.LogFilePath, $sizeMB, $cleanMode)
     } catch {
-        [void]$dgv.Rows.Add($true, $logName, 'N/A', 20, 'Circular')
+        [void]$dgv.Rows.Add($true, $logName, 'N/A', [int]20, 'Circular')
     }
 }
+
 
 Update-UI-Language
 [System.Windows.Forms.Application]::EnableVisualStyles()
