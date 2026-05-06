@@ -2,9 +2,48 @@
 .SYNOPSIS
     Configuration avancee des journaux d'evenements Windows avec multi-langue (FR/EN).
 .DESCRIPTION
-    Sauvegarde la configuration precedente, applique les changements en arriere-plan,
-    journalise les actions et verifie l'espace disque.
+    Mode GUI : Lancer sans parametre pour ouvrir l'interface graphique.
+    Mode CLI : Utiliser -NoGui pour une execution en ligne de commande (automatisation, taches planifiees).
+.PARAMETER Path
+    Dossier de destination des fichiers .evtx (defaut : E:\EVT ou dernier dossier sauvegarde).
+.PARAMETER Size
+    Taille maximale des journaux en Megaoctets (defaut : 200).
+.PARAMETER Mode
+    Mode de retention : Circular | AutoBackup | OverwriteAsNeeded (defaut : Circular).
+.PARAMETER Logs
+    Journaux a configurer. Noms specifiques, 'Active' (actifs > 0 octet) ou 'All' (tous).
+    Defaut : Application, System, Security, Setup.
+.PARAMETER NoGui
+    Active le mode ligne de commande. N'ouvre pas l'interface graphique.
+.PARAMETER Language
+    Langue des messages : FR | EN (defaut : FR).
+.PARAMETER Force
+    Ignore les confirmations et cree le dossier de destination automatiquement.
+.EXAMPLE
+    # Mode GUI (defaut)
+    .\WinLog-Optimizer.ps1
+.EXAMPLE
+    # Mode CLI : 4 journaux principaux a 200 Mo en Circular dans E:\EVT
+    .\WinLog-Optimizer.ps1 -NoGui -Force
+.EXAMPLE
+    # Mode CLI : Tous les journaux actifs a 512 Mo en AutoBackup
+    .\WinLog-Optimizer.ps1 -Path "D:\Logs" -Size 512 -Mode AutoBackup -Logs Active -NoGui -Force
+.EXAMPLE
+    # Mode CLI : Uniquement Security et Application a 256 Mo
+    .\WinLog-Optimizer.ps1 -Logs "Security","Application" -Size 256 -NoGui -Force
 #>
+[CmdletBinding()]
+Param(
+    [string]   $Path     = "",
+    [int]      $Size     = 200,
+    [ValidateSet('Circular','AutoBackup','OverwriteAsNeeded')]
+    [string]   $Mode     = "Circular",
+    [string[]] $Logs     = @('Application','System','Security','Setup'),
+    [switch]   $NoGui,
+    [ValidateSet('FR','EN')]
+    [string]   $Language = "",
+    [switch]   $Force
+)
 
 # --- 1. Dictionnaire International (i18n) ---
 $i18n = @{
@@ -144,15 +183,21 @@ function T {
 # --- 2. Verif Admin ---
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("Ce script doit etre execute en tant qu'Administrateur / This script must be run as Admin.", 'Admin Error', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    if ($NoGui) {
+        Write-Error "[ERREUR] Ce script doit etre execute en tant qu'Administrateur / Must be run as Administrator."
+    } else {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show("Ce script doit etre execute en tant qu'Administrateur / This script must be run as Admin.", 'Admin Error', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
     exit 1
 }
 
-# --- 3. Imports ---
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.ComponentModel
+# --- 3. Imports (GUI uniquement) ---
+if (-not $NoGui) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName System.ComponentModel
+}
 
 # --- 4. Couleurs UI ---
 $bg       = [System.Drawing.ColorTranslator]::FromHtml('#1e1e2e')
@@ -562,11 +607,15 @@ $btnLang.Add_Click({
 
 # --- 15. Fonctions Logique ---
 function Write-Log {
-    param($msg, $col = $text)
-    $txtOutput.SelectionStart = $txtOutput.TextLength
-    $txtOutput.SelectionColor = $col
-    $txtOutput.AppendText("$msg`r`n")
-    $txtOutput.ScrollToCaret()
+    param($msg, $col = $null)
+    if ($NoGui) {
+        Write-Host $msg
+    } else {
+        $txtOutput.SelectionStart = $txtOutput.TextLength
+        $txtOutput.SelectionColor = if ($null -ne $col) { $col } else { $text }
+        $txtOutput.AppendText("$msg`r`n")
+        $txtOutput.ScrollToCaret()
+    }
 }
 
 function Write-Audit {
@@ -574,6 +623,188 @@ function Write-Audit {
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $line = "$timestamp | $msg"
     Add-Content -Path $auditFile -Value $line -Encoding UTF8
+}
+
+# Fonction principale partagee CLI + GUI
+function Invoke-LogConfig {
+    param(
+        [PSCustomObject[]] $Settings,
+        [string]           $DestPath
+    )
+    $results = @()
+    foreach ($s in $Settings) {
+        $logName = $s.Name
+        switch ($s.Mode) {
+            'Circular'           { $rt = 'false'; $ab = 'false' }
+            'AutoBackup'         { $rt = 'true';  $ab = 'true'  }
+            'OverwriteAsNeeded'  { $rt = 'false'; $ab = 'false' }
+            default              { $rt = 'false'; $ab = 'false' }
+        }
+        $bytes    = [long]$s.Size * 1048576
+        $fullPath = Join-Path $DestPath ($logName + '.evtx')
+        $argStr   = "sl `"$logName`" /lfn:`"$fullPath`" /ms:$bytes /rt:$rt"
+        if ($ab -eq 'true') { $argStr += " /ab:true" }
+
+        $errPath = Join-Path $env:TEMP ("wevt_err_" + ($logName -replace '[\\/:*?"<>|]','_') + ".txt")
+        $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru -RedirectStandardError $errPath
+        $errMsg = if (Test-Path $errPath) { $m = (Get-Content $errPath -Raw).Trim(); Remove-Item $errPath -Force; $m } else { "" }
+
+        $res = [PSCustomObject]@{ Name=$logName; Size=$s.Size; Mode=$s.Mode; ExitCode=$proc.ExitCode; Error=$errMsg }
+        $results += $res
+
+        if ($res.ExitCode -eq 0) {
+            Write-Log "  [OK]   $logName | $($s.Size) MB | $($s.Mode)"
+            Write-Audit "OK | $logName | $($s.Size) MB | $($s.Mode)"
+        } else {
+            Write-Log "  [FAIL] $logName | Code=$($res.ExitCode) | $errMsg"
+            Write-Audit "FAIL | $logName | $($res.ExitCode) | $errMsg"
+        }
+
+        if (-not $NoGui) {
+            $progressBar.Value = [math]::Floor(($results.Count / $Settings.Count) * 100)
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+    }
+    return $results
+}
+
+# ============================================================
+# --- MODE CLI : execution silencieuse sans interface ---
+# ============================================================
+if ($NoGui) {
+    # Appliquer la langue CLI si specifiee, sinon lire le fichier de config
+    if ($Language -ne "") {
+        $script:currentLang = $Language.ToUpper()
+    }
+
+    # Resoudre le chemin de destination
+    $cliPath = $Path
+    if ([string]::IsNullOrWhiteSpace($cliPath)) {
+        if (Test-Path $configFile) {
+            $cliPath = (Get-Content $configFile -Raw).Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($cliPath)) { $cliPath = "E:\EVT" }
+    }
+
+    Write-Host "" 
+    Write-Host "======================================================" -ForegroundColor Cyan
+    Write-Host "  WinLog-Optimizer - Mode CLI" -ForegroundColor Cyan
+    Write-Host "======================================================" -ForegroundColor Cyan
+    Write-Host "  Destination : $cliPath"
+    Write-Host "  Taille      : $Size Mo"
+    Write-Host "  Mode        : $Mode"
+    Write-Host "  Langue      : $($script:currentLang)"
+    Write-Host "------------------------------------------------------" -ForegroundColor DarkGray
+
+    # Validation du chemin
+    if ($cliPath.StartsWith('\\')) {
+        Write-Error "[ERREUR] Les chemins UNC ne sont pas supportes."; exit 1
+    }
+    if ($cliPath -notmatch '^[a-zA-Z]:\\') {
+        Write-Error "[ERREUR] Chemin local invalide : $cliPath"; exit 1
+    }
+
+    # Creation du dossier si necessaire
+    if (-not (Test-Path $cliPath)) {
+        if ($Force) {
+            New-Item -ItemType Directory -Path $cliPath -Force | Out-Null
+            Write-Host "  [INFO] Dossier cree : $cliPath" -ForegroundColor Yellow
+        } else {
+            $rep = Read-Host "  Le dossier '$cliPath' n'existe pas. Le creer ? (O/N)"
+            if ($rep -match '^[oOyY]') {
+                New-Item -ItemType Directory -Path $cliPath -Force | Out-Null
+                Write-Host "  [INFO] Dossier cree : $cliPath" -ForegroundColor Yellow
+            } else {
+                Write-Error "[ERREUR] Dossier de destination inexistant. Annulation."; exit 1
+            }
+        }
+    }
+
+    # Test d'ecriture NTFS
+    try {
+        $tf = Join-Path $cliPath ("perm_test_" + (Get-Random) + ".tmp")
+        [System.IO.File]::WriteAllText($tf, "test"); Remove-Item $tf -Force
+    } catch {
+        Write-Error "[ERREUR] Acces refuse au dossier : $cliPath`n$($_.Exception.Message)"; exit 1
+    }
+
+    # Verification du service
+    $svc = Get-Service EventLog -ErrorAction SilentlyContinue
+    if ($null -eq $svc -or $svc.Status -ne 'Running') {
+        Write-Error "[ERREUR] Le service 'Windows Event Log' est arrete."; exit 1
+    }
+
+    # Resolution de la liste des journaux
+    Write-Host "  Journaux a configurer :"
+    $cliSettings = @()
+
+    if ($Logs -contains 'Active') {
+        Write-Host "  [SCAN] Recherche des journaux actifs (taille > 0)..." -ForegroundColor Yellow
+        $found = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object {
+            $_.IsEnabled -and
+            $_.LogType -ne 'Analytical' -and
+            $_.LogType -ne 'Debug' -and
+            $_.FileSize -gt 0
+        }
+        foreach ($l in $found) {
+            Write-Host "    - $($l.LogName)"
+            $cliSettings += [PSCustomObject]@{ Name=$l.LogName; Size=$Size; Mode=$Mode }
+        }
+    } elseif ($Logs -contains 'All') {
+        Write-Host "  [SCAN] Recuperation de TOUS les journaux du serveur..." -ForegroundColor Yellow
+        $found = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object {
+            $_.IsEnabled -and $_.LogType -ne 'Analytical' -and $_.LogType -ne 'Debug'
+        }
+        foreach ($l in $found) {
+            Write-Host "    - $($l.LogName)"
+            $cliSettings += [PSCustomObject]@{ Name=$l.LogName; Size=$Size; Mode=$Mode }
+        }
+    } else {
+        foreach ($logName in $Logs) {
+            $check = Get-WinEvent -ListLog $logName -ErrorAction SilentlyContinue
+            if ($null -eq $check) {
+                Write-Host "    - $logName [INTROUVABLE - ignore]" -ForegroundColor Red
+            } else {
+                Write-Host "    - $logName"
+                $cliSettings += [PSCustomObject]@{ Name=$logName; Size=$Size; Mode=$Mode }
+            }
+        }
+    }
+
+    if ($cliSettings.Count -eq 0) {
+        Write-Error "[ERREUR] Aucun journal valide trouve. Annulation."; exit 1
+    }
+
+    # Confirmation si -Force absent
+    if (-not $Force) {
+        Write-Host ""
+        $rep = Read-Host "  Appliquer la configuration sur $($cliSettings.Count) journaux ? (O/N)"
+        if ($rep -notmatch '^[oOyY]') {
+            Write-Host "  [ANNULE] Operation annulee par l'utilisateur." -ForegroundColor Yellow
+            exit 0
+        }
+    }
+
+    # Sauvegarde avant modification
+    $backupFile = Join-Path $scriptDir ('backup_cli_' + (Get-Date -Format 'yyyy-MM-dd_HH-mm') + '.json')
+    $cliSettings | ConvertTo-Json | Out-File $backupFile -Encoding UTF8
+    Write-Host "  [INFO] Backup cree : $backupFile" -ForegroundColor DarkGray
+    Write-Host "------------------------------------------------------" -ForegroundColor DarkGray
+
+    # Execution
+    $results = Invoke-LogConfig -Settings $cliSettings -DestPath $cliPath
+
+    # Resume final
+    $ok     = ($results | Where-Object { $_.ExitCode -eq 0 }).Count
+    $failed = $results.Count - $ok
+    Write-Host "------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "  TERMINE : $ok OK | $failed ECHECS" -ForegroundColor (if ($failed -eq 0) {'Green'} else {'Yellow'})
+    Write-Host "======================================================" -ForegroundColor Cyan
+
+    # Sauvegarde du chemin utilise
+    $cliPath | Out-File $configFile -Encoding UTF8
+
+    exit (if ($failed -eq 0) { 0 } else { 1 })
 }
 
 function Restore-Backup {
@@ -668,38 +899,7 @@ $btnApply.Add_Click({
     $txtOutput.Clear(); $progressBar.Visible=$true; $progressBar.Value=0; $btnApply.Enabled=$false; $btnRes.Enabled=$false
     Write-Log (T "LogBgStart")
     
-    $results = @()
-    foreach ($s in $settings) {
-        [System.Windows.Forms.Application]::DoEvents()
-        $logName = $s.Name
-        switch ($s.Mode) {
-            'Circular' { $rt = 'false'; $ab = 'false' }
-            'AutoBackup' { $rt = 'true'; $ab = 'true' }
-            'OverwriteAsNeeded' { $rt = 'false'; $ab = 'false' }
-        }
-        $bytes = [long]$s.Size * 1048576
-        $fullPath = Join-Path $path ($logName + '.evtx')
-        
-        $argStr = "sl `"$logName`" /lfn:`"$fullPath`" /ms:$bytes /rt:$rt"
-        if ($ab -eq 'true') { $argStr += " /ab:true" }
-
-        $errPath = Join-Path $env:TEMP ("wevt_err_$logName.txt")
-        $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru -RedirectStandardError $errPath
-
-        $errMsg = if (Test-Path $errPath) { (Get-Content $errPath -Raw).Trim(); Remove-Item $errPath -Force } else { "" }
-
-        $res = [PSCustomObject]@{ Name = $logName; Size = $s.Size; Mode = $s.Mode; ExitCode = $proc.ExitCode; Error = $errMsg }
-        $results += $res
-        
-        # Mise a jour UI directe
-        $progressBar.Value = [math]::Floor(($results.Count / $settings.Count) * 100)
-        if ($res.ExitCode -eq 0) {
-            Write-Log ($res.Name + " | " + $res.Size + " MB | " + $res.Mode) $green
-        } else {
-            Write-Log ($res.Name + " | FAIL (" + $res.ExitCode + ") : " + $res.Error) $redc
-        }
-        [System.Windows.Forms.Application]::DoEvents()
-    }
+    $results = Invoke-LogConfig -Settings $settings -DestPath $path
 
     # Finalisation (Copie de l'ancienne logique RunWorkerCompleted)
     $progressBar.Visible = $false
