@@ -1,0 +1,13 @@
+# Fichiers de configuration générés lors de l'exécution
+config_path.txt
+config_lang.txt
+
+# Fichiers de sauvegarde et de log générés
+backup_*.json
+backup_cli_*.json
+audit_*.log
+
+# Fichiers temporaires ou caches
+*.tmp
+.vs/
+.idea/

@@ -231,6 +231,15 @@ if (Test-Path $configFile) {
     if ([string]::IsNullOrWhiteSpace($savedPath)) { $savedPath = "E:\EVT" }
 }
 
+# --- Nettoyage automatique des anciens backups et audits (retention 30 jours) ---
+try {
+    $limitDate = (Get-Date).AddDays(-30)
+    Get-ChildItem -Path $scriptDir -File | Where-Object {
+        ($_.Name -like "backup_*.json" -or $_.Name -like "backup_cli_*.json" -or $_.Name -like "audit_*.log") -and
+        $_.LastWriteTime -lt $limitDate
+    } | Remove-Item -Force -ErrorAction SilentlyContinue
+} catch {}
+
 # --- 6. Formulaire ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = T "AppTitle"
@@ -646,8 +655,13 @@ function Invoke-LogConfig {
         if ($ab -eq 'true') { $argStr += " /ab:true" }
 
         $errPath = Join-Path $env:TEMP ("wevt_err_" + ($logName -replace '[\\/:*?"<>|]','_') + ".txt")
-        $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru -RedirectStandardError $errPath
-        $errMsg = if (Test-Path $errPath) { $m = (Get-Content $errPath -Raw).Trim(); Remove-Item $errPath -Force; $m } else { "" }
+        $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru -RedirectStandardError $errPath -WindowStyle Hidden
+        $errMsg = ""
+        if (Test-Path $errPath) {
+            $rawContent = Get-Content $errPath -Raw
+            if ($null -ne $rawContent) { $errMsg = $rawContent.Trim() }
+            Remove-Item $errPath -Force
+        }
 
         $res = [PSCustomObject]@{ Name=$logName; Size=$s.Size; Mode=$s.Mode; ExitCode=$proc.ExitCode; Error=$errMsg }
         $results += $res
@@ -798,13 +812,16 @@ if ($NoGui) {
     $ok     = ($results | Where-Object { $_.ExitCode -eq 0 }).Count
     $failed = $results.Count - $ok
     Write-Host "------------------------------------------------------" -ForegroundColor DarkGray
-    Write-Host "  TERMINE : $ok OK | $failed ECHECS" -ForegroundColor (if ($failed -eq 0) {'Green'} else {'Yellow'})
+    $termColor = if ($failed -eq 0) {'Green'} else {'Yellow'}
+    Write-Host "  TERMINE : $ok OK | $failed ECHECS" -ForegroundColor $termColor
     Write-Host "======================================================" -ForegroundColor Cyan
 
     # Sauvegarde du chemin utilise
     $cliPath | Out-File $configFile -Encoding UTF8
 
-    exit (if ($failed -eq 0) { 0 } else { 1 })
+    $exitCode = if ($failed -eq 0) { 0 } else { 1 }
+    if ($failed -eq 0 -and (Test-Path $backupFile)) { Remove-Item $backupFile -Force }
+    exit $exitCode
 }
 
 function Restore-Backup {
@@ -841,7 +858,7 @@ function Restore-Backup {
             $argStr = "sl `"$logName`" /lfn:`"$currentPath`" /ms:$bytes /rt:$rt"
             if ($ab -eq 'true') { $argStr += " /ab:true" }
             
-            $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru
+            $proc = Start-Process wevtutil -ArgumentList $argStr -Wait -PassThru -WindowStyle Hidden
 
             if ($proc.ExitCode -eq 0) {
                 $restored++
@@ -865,9 +882,15 @@ function Restore-Backup {
 
 # --- 17. Event Clic Appliquer ---
 $btnApply.Add_Click({
+    $dgv.EndEdit() | Out-Null
     if ([System.Windows.Forms.MessageBox]::Show((T "MsgConfirmText"), (T "MsgConfirmTitle"), 4, 32) -ne 'Yes') { return }
 
-    $settings = @(foreach ($r in $dgv.Rows) { if ($r.Cells['Active'].Value) { [PSCustomObject]@{ Name=$r.Cells['Journal'].Value; Size=$r.Cells['TailleMo'].Value; Mode=$r.Cells['Mode'].Value } } })
+    $settings = @(foreach ($r in $dgv.Rows) { 
+        $isActive = ($r.Cells['Active'].Value -eq $true -or $r.Cells['Active'].Value -eq 'True')
+        if ($isActive) { 
+            [PSCustomObject]@{ Name=$r.Cells['Journal'].Value; Size=$r.Cells['TailleMo'].Value; Mode=$r.Cells['Mode'].Value } 
+        } 
+    })
     if ($settings.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show((T "MsgNoSelText"), (T "MsgNoSelTitle"), 0, 48) | Out-Null; return }
 
     $svc = Get-Service EventLog -ErrorAction SilentlyContinue
@@ -896,21 +919,34 @@ $btnApply.Add_Click({
     $dgv.Rows | Select-Object @{n='Journal';e={$_.Cells['Journal'].Value}}, @{n='CurrentPath';e={$_.Cells['CurrentPath'].Value}}, @{n='Taille';e={$_.Cells['TailleMo'].Value}}, @{n='Mode';e={$_.Cells['Mode'].Value}} | ConvertTo-Json | Out-File $backupFile -Encoding UTF8
     Write-Log (T "LogBackup" $backupFile)
     
-    $txtOutput.Clear(); $progressBar.Visible=$true; $progressBar.Value=0; $btnApply.Enabled=$false; $btnRes.Enabled=$false
+    $txtOutput.Clear(); $progressBar.Visible=$true; $progressBar.Value=0
+    $btnApply.Enabled = $false; $btnRes.Enabled = $false; $btnLang.Enabled = $false; $btnScan.Enabled = $false
+    $txtSearch.Enabled = $false; $btnAll.Enabled = $false; $btnNone.Enabled = $false; $txtBulkSize.Enabled = $false
+    $btnBulkSize.Enabled = $false; $txtPath.Enabled = $false; $btnBr.Enabled = $false; $dgv.Enabled = $false
     Write-Log (T "LogBgStart")
     
-    $results = Invoke-LogConfig -Settings $settings -DestPath $path
+    $results = @()
+    try {
+        $results = Invoke-LogConfig -Settings $settings -DestPath $path
+    } catch {
+        Write-Log (T "LogErrCrit" $_.Exception.Message) $redc
+        Write-Audit (T "LogErrCrit" $_.Exception.Message)
+    } finally {
+        # Garantit la reactivation des controles meme en cas d'exception inattendue
+        $progressBar.Visible = $false
+        $btnApply.Enabled = $true; $btnRes.Enabled = $true; $btnLang.Enabled = $true; $btnScan.Enabled = $true
+        $txtSearch.Enabled = $true; $btnAll.Enabled = $true; $btnNone.Enabled = $true; $txtBulkSize.Enabled = $true
+        $btnBulkSize.Enabled = $true; $txtPath.Enabled = $true; $btnBr.Enabled = $true; $dgv.Enabled = $true
+    }
 
-    # Finalisation (Copie de l'ancienne logique RunWorkerCompleted)
-    $progressBar.Visible = $false
-    $btnApply.Enabled = $true
-    $btnRes.Enabled = $true
+    if ($results.Count -eq 0) { return }
 
     $successful = ($results | Where-Object { $_.ExitCode -eq 0 }).Count
     $failed = $results.Count - $successful
     
     Write-Log "-----------------------------------------------"
-    Write-Log (T "LogFinished" $successful $failed) (if ($failed -eq 0) { $green } else { $orange })
+    $logColor = if ($failed -eq 0) { $green } else { $orange }
+    Write-Log (T "LogFinished" $successful $failed) $logColor
     Write-Audit (T "LogFinished" $successful $failed)
 
     $txtPath.Text | Out-File $configFile -Encoding UTF8
@@ -926,7 +962,10 @@ $btnApply.Add_Click({
             $fLogs = ($results | Where-Object { $_.ExitCode -ne 0 }).Name -join ', '
             if ([System.Windows.Forms.MessageBox]::Show((T "MsgPartFail" $fLogs), '?', 4, 32) -eq 'Yes') { Restore-Backup $backupFile ($results | Where-Object { $_.ExitCode -ne 0 }).Name }
         }
-    } else { Write-Log (T "LogSuccess") $green }
+    } else { 
+        Write-Log (T "LogSuccess") $green 
+        if (Test-Path $backupFile) { Remove-Item $backupFile -Force }
+    }
 })
 
 $btnAll.Add_Click({ foreach ($r in $dgv.Rows) { $r.Cells['Active'].Value = $true } })
@@ -936,6 +975,17 @@ $btnRes.Add_Click({ foreach ($r in $dgv.Rows) {
     $r.Cells['TailleMo'].Value = if ($rowLog -eq 'Security') { 128 } elseif ($rowLog -match 'Setup|Forwarded') { 32 } else { 20 }
     $r.Cells['Mode'].Value = 'Circular'
 } })
+
+$btnBr.Add_Click({
+    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+    $fbd.Description = (T "LblDest").Replace(" :", "").Replace(":", "")
+    if (Test-Path $txtPath.Text) {
+        $fbd.SelectedPath = $txtPath.Text
+    }
+    if ($fbd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtPath.Text = $fbd.SelectedPath
+    }
+})
 
 # --- 18. Lancement ---
 $form.Controls.AddRange(@($panelH, $lblP, $txtPath, $btnBr, $lblGH, $lblCount, $dgv, $flowAdd, $flowSel, $flowBulk, $progressBar, $flowAct, $txtOutput))
